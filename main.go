@@ -1,87 +1,63 @@
 package main
 
 import (
-	"database/sql"
-	"fmt"
-	"log"
-	"net/http"
 	"os"
-	"time"
+	"fmt"
 
-	_ "github.com/go-sql-driver/mysql"
+	"learn-microservices/user-service/config"
+	"learn-microservices/user-service/database"
+	"learn-microservices/user-service/pkg/redis"
+	"learn-microservices/user-service/routes"
+	// "learn-microservices/user-service/cache"
 )
 
 func main() {
-	// Ambil konfigurasi dari environment
-	dbHost := os.Getenv("DB_HOST")
-	dbPort := os.Getenv("DB_PORT")
-	dbUser := os.Getenv("DB_USER")
-	dbPass := os.Getenv("DB_PASSWORD")
-	dbName := os.Getenv("DB_NAME")
+	// load config .env
+	config.LoadEnv()
 
-	// Default fallback kalau tidak ada env (opsional, aman untuk local run)
-	if dbHost == "" {
-		dbHost = "localhost"
-	}
-	if dbPort == "" {
-		dbPort = "3306"
-	}
-	if dbUser == "" {
-		dbUser = "user"
-	}
-	if dbPass == "" {
-		dbPass = "password"
-	}
-	if dbName == "" {
-		dbName = "userdb"
-	}
+	// inisialisasi Redis
+	redis.Init()
 
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true",
-		dbUser, dbPass, dbHost, dbPort, dbName)
+	//inisialisasi database
+	database.InitDB()
 
-	// Buka koneksi
-	db, err := sql.Open("mysql", dsn)
-	if err != nil {
-		log.Fatal("Failed to open DB:", err)
-	}
-	defer db.Close()
+	// reset cache
+	// cache.InvalidateUserListCache()
+    // cache.InvalidateAllSingleUserCache()
 
-	// Retry sampai DB ready (penting di Docker)
-	for i := 0; i < 10; i++ {
-		err = db.Ping()
-		if err == nil {
-			break
+	// Cek argumen CLI
+	if len(os.Args) > 1 {
+		arg := os.Args[1]
+
+		switch arg {
+		case "reset":
+			fmt.Println("Mode: RESET users table")
+			// database.ResetAll(false) // reset tanpa seed ulang
+
+		case "seed":
+			fmt.Println("Mode: SEED only (tanpa reset)")
+			// database.Seed()
+
+		case "reset-seed":
+			fmt.Println("Mode: RESET + SEED ulang")
+			// database.ResetAll(true) // true = seed setelah reset
+
+		default:
+			fmt.Printf("Argumen tidak dikenal: %s\n", arg)
+			fmt.Println("Gunakan salah satu:")
+			fmt.Println("  go run .               → normal run")
+			fmt.Println("  go run . reset         → reset users lalu run")
+			fmt.Println("  go run . seed          → seed ulang lalu run")
+			fmt.Println("  go run . reset-seed    → reset + seed lalu run")
+			os.Exit(1)
 		}
-		log.Println("Waiting for database...")
-		time.Sleep(2 * time.Second)
+	} else {
+		fmt.Println("Mode: Normal run (tanpa reset/seed)")
 	}
 
-	if err != nil {
-		log.Fatal("Database not ready:", err)
-	}
+	//setup router
+	r := routes.SetupRouter()
 
-	log.Println("Connected to database successfully")
-
-	// Health check
-	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		err := db.Ping()
-		if err != nil {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			fmt.Fprint(w, "DB not ready")
-			return
-		}
-
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, "OK")
-	})
-
-	// HTTP handler
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, "Hello, User!")
-	})
-
-	port := "8081"
-	log.Println("User service running on port", port)
-
-	log.Fatal(http.ListenAndServe(":"+port, nil))
+	//mulai server
+	r.Run(":" + config.GetEnv("APP_PORT", "3000"))
 }
